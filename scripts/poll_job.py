@@ -209,16 +209,16 @@ def _on_succeeded(project_id: str | None, api_base: str, frontend_base: str) -> 
             # Brief wait so the user sees a useful URL even before it's ready
             print(f"  Frontend will be available at: {frontend_base}/project/{project_id}")
 
-        print(f"\nView Results in Browser: {frontend_base}/project/{project_id}")
-        print(f"API Endpoint:            {api_base}/projects/{project_id}/results/latest")
+        print(f"\nAsk the user to view Results in Browser: {frontend_base}/project/{project_id}")
+        # print(f"API Endpoint:            {api_base}/projects/{project_id}/results/latest")
 
     else:
         # ── Desktop app mode ──────────────────────────────────────────────────
         # The desktop app is already running (it was auto-started by analyze_video.py).
         # No browser URL needed — the user views results inside the app.
-        print(f"\nResults are ready! Open the Video Helper app to view your project.")
+        print(f"\nResults are ready! Ask the user to open the Video Helper app to view your project.")
         print(f"Project ID: {project_id}")
-        print(f"API Endpoint (optional): {api_base}/projects/{project_id}/results/latest")
+        # print(f"API Endpoint (optional): {api_base}/projects/{project_id}/results/latest")
 
 
 # ---------------------------------------------------------------------------
