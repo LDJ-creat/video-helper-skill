@@ -6,6 +6,9 @@ Usage: python poll_job.py <jobId> [--interval 2] [--timeout 600] [--stop-on-bloc
 
 Detects whether the user is running the source-code setup or the desktop app,
 and adjusts its completion messages (and frontend auto-start) accordingly.
+
+Also supports Docker deployment mode (docker compose): on success, prompts the
+user to open the frontend URL to view results.
 """
 
 import argparse
@@ -21,6 +24,8 @@ from pathlib import Path
 
 DEFAULT_API_BASE = os.environ.get("VIDEO_HELPER_API_URL", "http://localhost:8000/api/v1")
 DEFAULT_FRONTEND_BASE = os.environ.get("VIDEO_HELPER_FRONTEND_URL", "http://localhost:3000")
+
+ENV_RUN_MODE = "VIDEO_HELPER_RUN_MODE"  # "desktop" | "docker" | "source"
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +58,11 @@ def _load_env_file(path: Path) -> None:
 def _is_source_code_mode() -> str | None:
     """Return the backend source root if we are in source-code mode, else None."""
     return os.environ.get("VIDEO_HELPER_SOURCE_DIR", "").strip() or None
+
+
+def _is_docker_mode() -> bool:
+    mode = os.environ.get(ENV_RUN_MODE, "").strip().lower()
+    return mode == "docker"
 
 
 def _is_frontend_running(frontend_base: str) -> bool:
@@ -195,7 +205,7 @@ def poll_job(
 
 
 def _on_succeeded(project_id: str | None, api_base: str, frontend_base: str) -> None:
-    """Handle post-success output, differentiating source-code vs desktop mode."""
+    """Handle post-success output, differentiating source-code / docker / desktop."""
     backend_dir = _is_source_code_mode()
 
     if backend_dir:
@@ -211,6 +221,16 @@ def _on_succeeded(project_id: str | None, api_base: str, frontend_base: str) -> 
 
         print(f"\nAsk the user to view Results in Browser: {frontend_base}/project/{project_id}")
         # print(f"API Endpoint:            {api_base}/projects/{project_id}/results/latest")
+
+    elif _is_docker_mode():
+        # ── Docker compose mode ─────────────────────────────────────────────
+        # Services are expected to be reachable via VIDEO_HELPER_FRONTEND_URL.
+        if project_id:
+            print("\nResults are ready! Ask the user to open in browser:")
+            print(f"  {frontend_base}/project/{project_id}")
+        else:
+            print("\nResults are ready! Ask the user to open the frontend in browser:")
+            print(f"  {frontend_base}")
 
     else:
         # ── Desktop app mode ──────────────────────────────────────────────────

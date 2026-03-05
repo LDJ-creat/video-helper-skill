@@ -18,7 +18,22 @@
    ```
    留空则由 Skill 自动探测默认安装位置（无需手动配置）。
 
-### 方式 B：克隆源码（适合开发者）
+### 方式 B：Docker Compose 部署（适合容器用户）
+
+1. 确保已安装并启动 Docker。
+   - Windows/macOS：通常是 Docker Desktop
+   - Linux：通常是 Docker daemon 服务
+2. 在 video-helper 仓库根目录（包含 `docker-compose.yml`）执行：
+   ```
+   docker compose up -d
+   ```
+3. 本 Skill 也支持在后端不可用时自动尝试拉起 docker compose（默认开启）。可在 `.env` 中控制：
+   ```
+   VIDEO_HELPER_ENABLE_DOCKER_AUTOSTART=1
+   ```
+   设为 `0` 可禁用 Docker 自动启动。
+
+### 方式 C：克隆源码（适合开发者）
 
 1. 从 GitHub 克隆并配置 [video-helper](https://github.com/LDJ-creat/video-helper) 源码。
 2. 在该 Skill 根目录下的 `.env` 文件中设置 `VIDEO_HELPER_SOURCE_DIR` 为克隆的项目根目录路径，例如：
@@ -33,7 +48,7 @@
    VIDEO_HELPER_FRONTEND_URL=http://localhost:3000
    ```
 
-> **注意：** 若桌面端未安装或启动失败，脚本会自动降级到 `VIDEO_HELPER_SOURCE_DIR` 源码启动方式。
+> **注意：** 自动启动检查顺序为：桌面端 → Docker（若开启）→ 源码。
 
 ## 📥 安装方式
 

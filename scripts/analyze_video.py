@@ -32,6 +32,10 @@ from typing import Any, Optional
 from dataclasses import dataclass
 
 
+ENV_RUN_MODE = "VIDEO_HELPER_RUN_MODE"  # "desktop" | "docker" | "source"
+ENV_ENABLE_DOCKER_AUTOSTART = "VIDEO_HELPER_ENABLE_DOCKER_AUTOSTART"  # default: enabled
+
+
 # Configuration
 DEFAULT_API_BASE = os.environ.get("VIDEO_HELPER_API_URL", "http://localhost:8000/api/v1")
 
@@ -124,6 +128,201 @@ def _load_env_file(path: Path) -> None:
         pass
 
 
+def _find_project_root_with_docker_compose(start: Path) -> Path | None:
+    """Find a directory (walking upwards) that contains docker-compose.yml."""
+    try:
+        for p in [start, *start.parents]:
+            if (p / "docker-compose.yml").is_file():
+                return p
+    except Exception:
+        return None
+    return None
+
+
+def _get_docker_project_dir(skill_root: Path) -> Path | None:
+    """Return docker-compose project dir if configured or discoverable."""
+    # Prefer VIDEO_HELPER_SOURCE_DIR if it contains docker-compose.yml.
+    source_dir = os.environ.get("VIDEO_HELPER_SOURCE_DIR", "").strip()
+    if source_dir:
+        p = Path(source_dir)
+        if (p / "docker-compose.yml").is_file():
+            return p
+
+    # Best-effort discovery: this skill often lives inside the repo at
+    # <repo>/skill/video-analyzer-skill, so walking upwards usually finds it.
+    return _find_project_root_with_docker_compose(skill_root)
+
+
+def _docker_daemon_ready() -> bool:
+    """Return True if docker client exists and daemon is reachable."""
+    try:
+        r = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+        )
+        return r.returncode == 0
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def _compose_base_cmd() -> list[str] | None:
+    """Prefer `docker compose`, fall back to legacy `docker-compose`."""
+    try:
+        r = subprocess.run(
+            ["docker", "compose", "version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+        )
+        if r.returncode == 0:
+            return ["docker", "compose"]
+    except FileNotFoundError:
+        # Docker not installed.
+        return None
+    except Exception:
+        pass
+
+    try:
+        r = subprocess.run(
+            ["docker-compose", "version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5.0,
+        )
+        if r.returncode == 0:
+            return ["docker-compose"]
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+    return None
+
+
+def _find_docker_desktop_exe() -> Path | None:
+    if os.name != "nt":
+        return None
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        Path(program_files) / "Docker" / "Docker" / "Docker Desktop.exe",
+        Path(local_app_data) / "Programs" / "Docker" / "Docker" / "Docker Desktop.exe",
+    ]
+    for c in candidates:
+        if c.is_file():
+            return c
+    return None
+
+
+def _try_start_docker_desktop(*, timeout_s: float, log_fp, creationflags: int) -> bool:
+    """Best-effort: start Docker Desktop and wait for daemon to become reachable."""
+    if os.name == "nt":
+        exe = _find_docker_desktop_exe()
+        if not exe:
+            return False
+
+        try:
+            subprocess.Popen(
+                [str(exe)],
+                stdout=log_fp,
+                stderr=log_fp,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                close_fds=True,
+            )
+        except Exception:
+            return False
+    elif sys.platform == "darwin":
+        # macOS typically needs Docker Desktop (or Colima/Rancher Desktop). We can
+        # only best-effort launch the GUI app.
+        try:
+            subprocess.Popen(["open", "-a", "Docker"], stdout=log_fp, stderr=log_fp)
+        except Exception:
+            return False
+    else:
+        return False
+
+    deadline = time.time() + float(max(5.0, timeout_s))
+    while time.time() < deadline:
+        if _docker_daemon_ready():
+            return True
+        time.sleep(2.0)
+    return False
+
+
+def _try_start_via_docker(
+    api_base: str,
+    *,
+    skill_root: Path,
+    timeout_s: float,
+    creationflags: int,
+    log_dir: Path,
+) -> bool:
+    docker_dir = _get_docker_project_dir(skill_root)
+    if not docker_dir:
+        return False
+
+    compose_file = docker_dir / "docker-compose.yml"
+    if not compose_file.is_file():
+        return False
+
+    compose_cmd = _compose_base_cmd()
+    if not compose_cmd:
+        return False
+
+    log_path = log_dir / "skill-docker-autostart.log"
+    with open(log_path, "ab", buffering=0) as log_fp:
+        if not _docker_daemon_ready():
+            if os.name == "nt" or sys.platform == "darwin":
+                print("Docker daemon unavailable; trying to start Docker Desktop…", file=sys.stderr)
+                if not _try_start_docker_desktop(timeout_s=90.0, log_fp=log_fp, creationflags=creationflags):
+                    print("Warning: Docker Desktop did not become ready in time.", file=sys.stderr)
+                    return False
+            else:
+                return False
+
+        # Start core + web so the user can open the frontend URL after completion.
+        print("Starting backend via Docker Compose…")
+        base = [*compose_cmd, "-f", str(compose_file)]
+        up_cmd = [*base, "up", "-d", "--remove-orphans", "--force-recreate", "core", "web"]
+
+        def _run(cmd: list[str], *, timeout: float) -> int:
+            r = subprocess.run(
+                cmd,
+                cwd=str(docker_dir),
+                stdout=log_fp,
+                stderr=log_fp,
+                timeout=timeout,
+            )
+            return r.returncode
+
+        try:
+            rc = _run(up_cmd, timeout=600.0)
+            if rc != 0:
+                # Recovery for cases like "Error while Stopping" / "No such container".
+                _run([*base, "down", "--remove-orphans"], timeout=120.0)
+                rc = _run(up_cmd, timeout=600.0)
+            if rc != 0:
+                return False
+        except Exception as e:
+            print(f"Warning: Failed to run docker compose up: {e}", file=sys.stderr)
+            return False
+
+    # Mark mode for downstream subprocesses (e.g. poll_job.py).
+    os.environ.setdefault(ENV_RUN_MODE, "docker")
+
+    try:
+        _wait_for_backend(api_base, max(float(timeout_s), 120.0), log_path)
+        return True
+    except RuntimeError as e:
+        print(f"Warning: Docker started but backend did not become ready: {e}", file=sys.stderr)
+        return False
+
+
 def _check_health(api_base: str) -> bool:
     """Check if the backend service is healthy (inline, no external dependencies)."""
     try:
@@ -185,32 +384,45 @@ def ensure_backend_running(api_base: str, *, auto_start: bool, timeout_s: float 
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS  # type: ignore[attr-defined]
 
-    # ── Step 2: Try desktop app first (Option B) ───────────────────────────────
-    desktop_exe = _find_desktop_app_exe()
-    if desktop_exe:
-        print(f"Auto-starting Video Helper desktop app: {desktop_exe}", file=sys.stderr)
-        with open(log_path, "ab", buffering=0) as log_fp:
-            try:
-                subprocess.Popen(
-                    [str(desktop_exe)],
-                    stdout=log_fp,
-                    stderr=log_fp,
-                    stdin=subprocess.DEVNULL,
-                    creationflags=creationflags,
-                    close_fds=True,
-                )
-            except Exception as e:
-                print(f"Warning: Failed to auto-start desktop app: {e}", file=sys.stderr)
-                # Fall through to Option A
-            else:
-                try:
-                    _wait_for_backend(api_base, timeout_s, log_path)
-                    return  # Desktop app started successfully
-                except RuntimeError as e:
-                    print(f"Warning: Desktop app launched but backend did not become ready: {e}", file=sys.stderr)
-                    # Fall through to Option A
+    # # ── Step 2: Try desktop app first (Option B) ───────────────────────────────
+    # desktop_exe = _find_desktop_app_exe()
+    # if desktop_exe:
+    #     print(f"Auto-starting Video Helper desktop app: {desktop_exe}", file=sys.stderr)
+    #     with open(log_path, "ab", buffering=0) as log_fp:
+    #         try:
+    #             subprocess.Popen(
+    #                 [str(desktop_exe)],
+    #                 stdout=log_fp,
+    #                 stderr=log_fp,
+    #                 stdin=subprocess.DEVNULL,
+    #                 creationflags=creationflags,
+    #                 close_fds=True,
+    #             )
+    #         except Exception as e:
+    #             print(f"Warning: Failed to auto-start desktop app: {e}", file=sys.stderr)
+    #             # Fall through to Option A
+    #         else:
+    #             try:
+    #                 _wait_for_backend(api_base, timeout_s, log_path)
+    #                 return  # Desktop app started successfully
+    #             except RuntimeError as e:
+    #                 print(f"Warning: Desktop app launched but backend did not become ready: {e}", file=sys.stderr)
+    #                 # Fall through to Option A
 
-    # ── Step 3: Fall back to source-code mode (Option A) ──────────────────────
+    # ── Step 3: Try Docker compose (Option C) ─────────────────────────────────
+    enable_docker = os.environ.get(ENV_ENABLE_DOCKER_AUTOSTART, "1").strip().lower()
+    docker_allowed = enable_docker not in {"0", "false", "no", "off"}
+    if docker_allowed:
+        if _try_start_via_docker(
+            api_base,
+            skill_root=skill_root,
+            timeout_s=timeout_s,
+            creationflags=creationflags,
+            log_dir=log_dir,
+        ):
+            return
+
+    # ── Step 4: Fall back to source-code mode (Option A) ──────────────────────
     backend_root = os.environ.get("VIDEO_HELPER_SOURCE_DIR", "").strip()
     if not backend_root:
         print(
@@ -221,7 +433,9 @@ def ensure_backend_running(api_base: str, *, auto_start: bool, timeout_s: float 
             "                          e.g. VIDEO_HELPER_SOURCE_DIR=D:\\video-helper\n"
             "  Option B (desktop app): Install the Video Helper desktop app,\n"
             "                          or set VIDEO_HELPER_DESKTOP_INSTALL_DIR if installed to a\n"
-            "                          non-default location.",
+            "                          non-default location.\n"
+            "  Option C (docker):      Use docker compose (docker-compose.yml) and ensure Docker is running.\n"
+            "                          (Docker auto-start is controlled by VIDEO_HELPER_ENABLE_DOCKER_AUTOSTART=1)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -249,6 +463,8 @@ def ensure_backend_running(api_base: str, *, auto_start: bool, timeout_s: float 
         )
 
     print(f"Auto-starting backend via source code: {backend_main}", file=sys.stderr)
+
+    os.environ.setdefault(ENV_RUN_MODE, "source")
 
     env = os.environ.copy()
     env.setdefault("WORKER_ENABLE", "1")
@@ -530,6 +746,8 @@ Examples:
 Environment Variables:
   VIDEO_HELPER_API_URL      Backend API URL (default: http://localhost:8000/api/v1)
   VIDEO_HELPER_FRONTEND_URL Frontend URL for result links (default: http://localhost:3000)
+    VIDEO_HELPER_ENABLE_DOCKER_AUTOSTART Enable/disable docker auto-start (default: 1)
+    VIDEO_HELPER_SOURCE_DIR   Source-code project root (fallback)
 """,
     )
 

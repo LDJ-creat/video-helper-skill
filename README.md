@@ -18,7 +18,23 @@ This skill is a bridge between your AI editor and the **Video Analysis Assistant
    ```
    If left blank, the skill will auto-detect the default install location.
 
-### Option B: Source Code (For developers)
+### Option B: Docker Compose (For container users)
+
+1. Ensure Docker is installed and running.
+   - Windows/macOS: usually Docker Desktop
+   - Linux: typically the Docker daemon service
+2. From your video-helper repo root (contains `docker-compose.yml`):
+   ```
+   docker compose up -d
+   ```
+3. The skill can also auto-start docker compose when the backend is unavailable.
+   Control it via `.env`:
+   ```
+   VIDEO_HELPER_ENABLE_DOCKER_AUTOSTART=1
+   ```
+   Set it to `0` to disable docker auto-start.
+
+### Option C: Source Code (For developers)
 
 1. Clone and set up [video-helper](https://github.com/LDJ-creat/video-helper) from source.
 2. Open the `.env` file in the skill root and set `VIDEO_HELPER_SOURCE_DIR` to the cloned project root, for example:
@@ -33,7 +49,7 @@ This skill is a bridge between your AI editor and the **Video Analysis Assistant
    VIDEO_HELPER_FRONTEND_URL=http://localhost:3000
    ```
 
-> **Note:** If the desktop app is not installed or fails to start, the skill automatically falls back to source-code mode using `VIDEO_HELPER_SOURCE_DIR`.
+> **Note:** Auto-start order is: Desktop → Docker (if enabled) → Source code.
 
 ## 📥 Installation
 
