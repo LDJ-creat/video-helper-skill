@@ -1,6 +1,6 @@
 ---
 name: video-analyzer-skill
-description: Analyze videos to extract structured knowledge including mind maps, key highlights, and timestamps. Use when users want to analyze a video (YouTube, Bilibili, or local file), extract video content, generate video summaries, or understand video structure. Triggers: 'analyze video', 'summarize video', 'extract from video', 'video mind map', '视频分析', '总结视频'.
+description: "Analyze videos to extract structured knowledge including mind maps, key highlights, and timestamps. Use when users want to analyze a video (YouTube, Bilibili, or local file), extract video content, generate video summaries, or understand video structure. Triggers: 'analyze video', 'summarize video', 'extract from video', 'video mind map', '视频分析', '总结视频'."
 ---
 
 # Video Analyzer
